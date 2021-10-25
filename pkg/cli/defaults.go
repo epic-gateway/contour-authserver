@@ -17,8 +17,8 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/projectcontour/contour-authserver/pkg/auth"
-	"github.com/projectcontour/contour-authserver/pkg/version"
+	"gitlab.com/acnodal/epic/contour-authserver/pkg/auth"
+	"gitlab.com/acnodal/epic/contour-authserver/pkg/version"
 
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc"

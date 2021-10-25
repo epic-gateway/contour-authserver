@@ -1,4 +1,4 @@
-module github.com/projectcontour/contour-authserver
+module gitlab.com/acnodal/epic/contour-authserver
 
 go 1.14
 

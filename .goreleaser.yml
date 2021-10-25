@@ -15,10 +15,10 @@ builds:
   ldflags:
   - -s
   - -w
-  - -X github.com/projectcontour/contour-authserver/pkg/version.Progname={{ .ProjectName }}
-  - -X github.com/projectcontour/contour-authserver/pkg/version.Version={{ .Env.VERSION }}
-  - -X github.com/projectcontour/contour-authserver/pkg/version.Sha={{ .Env.SHA }}
-  - -X github.com/projectcontour/contour-authserver/pkg/version.BuildDate={{ .Date }}
+  - -X gitlab.com/acnodal/epic/contour-authserver/pkg/version.Progname={{ .ProjectName }}
+  - -X gitlab.com/acnodal/epic/contour-authserver/pkg/version.Version={{ .Env.VERSION }}
+  - -X gitlab.com/acnodal/epic/contour-authserver/pkg/version.Sha={{ .Env.SHA }}
+  - -X gitlab.com/acnodal/epic/contour-authserver/pkg/version.BuildDate={{ .Date }}
 archives:
 - replacements:
     darwin: Darwin

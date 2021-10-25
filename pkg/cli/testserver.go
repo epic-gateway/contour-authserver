@@ -16,7 +16,7 @@ package cli
 import (
 	"net"
 
-	"github.com/projectcontour/contour-authserver/pkg/auth"
+	"gitlab.com/acnodal/epic/contour-authserver/pkg/auth"
 
 	"github.com/spf13/cobra"
 	ctrl "sigs.k8s.io/controller-runtime"
