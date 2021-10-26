@@ -23,7 +23,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/cache"
 )
 
 // NewEpicHtpasswdCommand ...
@@ -33,20 +32,13 @@ func NewEpicHtpasswdCommand() *cobra.Command {
 		Short: "Run an EPIC-compatible htpasswd basic authentication server",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			log := ctrl.Log.WithName("auth.htpasswd")
+			log := ctrl.Log.WithName("auth.epic")
 			s := runtime.NewScheme()
 
 			scheme.AddToScheme(s) //nolint(errcheck)
 
-			var cacheFunc cache.NewCacheFunc
-
-			if ns, err := cmd.Flags().GetStringSlice("watch-namespaces"); err == nil && len(ns) > 0 {
-				cacheFunc = cache.MultiNamespacedCacheBuilder(ns)
-			}
-
 			mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 				Scheme:             s,
-				NewCache:           cacheFunc,
 				MetricsBindAddress: mustString(cmd.Flags().GetString("metrics-address")),
 			})
 			if err != nil {
@@ -58,11 +50,12 @@ func NewEpicHtpasswdCommand() *cobra.Command {
 				return ExitErrorf(EX_CONFIG, "failed to parse secrets selector: %s", err)
 			}
 
-			htpasswd := &auth.EpicHtpasswd{
-				Log:      log,
-				Client:   mgr.GetClient(),
-				Realm:    mustString(cmd.Flags().GetString("auth-realm")),
-				Selector: secretsSelector,
+			htpasswd, err := auth.NewEpicHtpasswd(
+				log, mgr.GetClient(),
+				secretsSelector, mustString(cmd.Flags().GetString("auth-realm")),
+			)
+			if err != nil {
+				return ExitErrorf(EX_CONFIG, "failed to instantiate authenticator: %s", err)
 			}
 
 			if err := htpasswd.RegisterWithManager(mgr); err != nil {
@@ -117,7 +110,6 @@ func NewEpicHtpasswdCommand() *cobra.Command {
 
 	// Controller flags.
 	cmd.Flags().String("metrics-address", ":8080", "The address the metrics endpoint binds to.")
-	cmd.Flags().StringSlice("watch-namespaces", []string{}, "The list of namespaces to watch for Secrets.")
 	cmd.Flags().String("selector", "", "Selector (label-query) to filter Secrets, supports '=', '==', and '!='.")
 
 	// GRPC flags.

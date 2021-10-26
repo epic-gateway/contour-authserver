@@ -24,6 +24,7 @@ import (
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -49,7 +50,7 @@ func TestEpicHtpasswdAuth(t *testing.T) {
 		&v1.Secret{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "example1",
-				Namespace: metav1.NamespaceDefault,
+				Namespace: "epic-test",
 				Labels:    map[string]string{"app": "authserver"},
 				Annotations: map[string]string{
 					AnnotationAuthType:  "basic",
@@ -65,7 +66,7 @@ func TestEpicHtpasswdAuth(t *testing.T) {
 		&v1.Secret{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "example2",
-				Namespace: metav1.NamespaceDefault,
+				Namespace: "namespace2",
 				Labels:    map[string]string{"app": "authserver"},
 				Annotations: map[string]string{
 					AnnotationAuthType:  "basic",
@@ -101,20 +102,37 @@ func TestEpicHtpasswdAuth(t *testing.T) {
 		t.Fatalf("failed to parse selector: %s", err)
 	}
 
-	auth := EpicHtpasswd{
-		Log:      log.NullLogger{},
-		Realm:    "default",
-		Client:   client,
-		Selector: selector,
-	}
+	auth, err := NewEpicHtpasswd(log.NullLogger{}, client, selector, "default")
+	assert.NoError(t, err, "instantiation should not have failed")
 
-	_, err = auth.Reconcile(ctrl.Request{})
+	// Load secrets
+	_, err = auth.Reconcile(ctrl.Request{
+		NamespacedName: types.NamespacedName{
+			Namespace: "epic-test", Name: "example1",
+		},
+	})
 	assert.NoError(t, err, "reconciliation should not have failed")
 	assert.NotNil(t, auth.Passwords, "reconciliation should have set a htpasswd file")
-	assert.True(t, auth.Match("example1", "example1"), "auth for example1:example1 should have succeeded")
-	assert.True(t, auth.Match("example2", "example2"), "auth for example2:example2 should have succeeded")
-	assert.False(t, auth.Match("example3", "example3"), "auth for example3:example3 should have failed (wrong realm)")
-	assert.False(t, auth.Match("notmatched", "notmatched"),
+	_, err = auth.Reconcile(ctrl.Request{
+		NamespacedName: types.NamespacedName{
+			Namespace: "namespace2", Name: "example2",
+		},
+	})
+	assert.NoError(t, err, "reconciliation should not have failed")
+	_, err = auth.Reconcile(ctrl.Request{
+		NamespacedName: types.NamespacedName{
+			Namespace: metav1.NamespaceDefault, Name: "example3",
+		},
+	})
+	assert.NoError(t, err, "reconciliation should not have failed")
+
+	assert.True(t, auth.Match("epic-test", "example1", "example1"),
+		"auth for example1:example1 should have succeeded")
+	assert.True(t, auth.Match("namespace2", "example2", "example2"),
+		"auth for example2:example2 should have succeeded")
+	assert.False(t, auth.Match(metav1.NamespaceDefault, "example3", "example3"),
+		"auth for example3:example3 should have failed (wrong realm)")
+	assert.False(t, auth.Match(metav1.NamespaceDefault, "notmatched", "notmatched"),
 		"auth for notmatched:notmatched should have failed (filtered by label selector)")
 
 	// Check an unauthorized response.
@@ -132,10 +150,10 @@ func TestEpicHtpasswdAuth(t *testing.T) {
 	// Check an authorized response.
 	response, err = auth.Check(context.TODO(), &Request{
 		Request: http.Request{
+			URL: &url.URL{Path: "/api/epic/accounts/test/foo"},
 			Header: http.Header{
 				"Authorization": {"Basic ZXhhbXBsZTE6ZXhhbXBsZTE="},
 			},
-			URL: &url.URL{},
 		},
 		Context: map[string]string{
 			"key1": "value1",

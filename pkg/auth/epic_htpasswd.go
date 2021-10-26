@@ -18,6 +18,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 
 	"github.com/go-logr/logr"
@@ -28,12 +29,16 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
+var (
+	done = ctrl.Result{Requeue: false}
+)
+
 // EpicHtpasswd watches Secrets for htpasswd files and uses them for HTTP Basic Authentication.
 type EpicHtpasswd struct {
 	Log       logr.Logger
 	Realm     string
 	Client    client.Client
-	Passwords *htpasswd.File
+	Passwords map[string]*htpasswd.File // key: namespace string, value: passwords for that ns
 	Selector  labels.Selector
 
 	Lock sync.Mutex
@@ -41,23 +46,44 @@ type EpicHtpasswd struct {
 
 var _ Checker = &EpicHtpasswd{}
 
+// NewEpicHtpasswd returns an EpicHtpasswd. If err is non-nil then the
+// EpicHtpasswd is not usable.
+func NewEpicHtpasswd(
+	logger logr.Logger, client client.Client,
+	selector labels.Selector, realm string,
+) (*EpicHtpasswd, error) {
+	return &EpicHtpasswd{
+		Log:       logger,
+		Client:    client,
+		Selector:  selector,
+		Realm:     realm,
+		Passwords: map[string]*htpasswd.File{},
+	}, nil
+}
+
 // Set set the htpasswd file to use.
-func (h *EpicHtpasswd) Set(passwd *htpasswd.File) {
+func (h *EpicHtpasswd) Set(namespace string, passwd *htpasswd.File) {
 	h.Lock.Lock()
 	defer h.Lock.Unlock()
 
-	h.Passwords = passwd
+	h.Passwords[namespace] = passwd
 }
 
 // Match authenticates the credential against the htpasswd file.
-func (h *EpicHtpasswd) Match(user string, pass string) bool {
-	var passwd *htpasswd.File
+func (h *EpicHtpasswd) Match(namespace string, user string, pass string) bool {
+	var (
+		passwd *htpasswd.File
+		hasPW  bool
+	)
 
 	// Arguably, getting and setting the pointer is atomic, but
 	// Go doesn't make any guarantees.
 	h.Lock.Lock()
-	passwd = h.Passwords
+	passwd, hasPW = h.Passwords[namespace]
 	h.Lock.Unlock()
+	if !hasPW {
+		return false
+	}
 
 	if passwd != nil {
 		// htpasswd.File locks internally, so all Match
@@ -70,18 +96,31 @@ func (h *EpicHtpasswd) Match(user string, pass string) bool {
 
 // Check ...
 func (h *EpicHtpasswd) Check(ctx context.Context, request *Request) (*Response, error) {
+	user, pass, ok := request.Request.BasicAuth()
+
+	// Figure out the NS from the request path
+	namespace, err := h.fetchNamespace(request.Request.URL.Path)
+	if err != nil {
+		h.Log.Info("can't find namespace in request",
+			"host", request.Request.Host,
+			"path", request.Request.URL.Path,
+			"id", request.ID,
+		)
+
+		ok = false
+	}
+
 	h.Log.Info("checking request",
 		"host", request.Request.Host,
 		"path", request.Request.URL.Path,
 		"id", request.ID,
+		"ns", namespace,
+		"user", user,
 	)
 
-	user, pass, ok := request.Request.BasicAuth()
-
-	// If there's an "Authorization" header and we can verify
-	// it, succeed and inject some headers to tell the origin
-	//what  we did.
-	if ok && h.Match(user, pass) {
+	// If there's an "Authorization" header and we can verify it,
+	// succeed and inject some headers to tell the origin what we did.
+	if ok && h.Match(namespace, user, pass) {
 		// TODO(jpeach) inject context attributes into the headers.
 		authorized := http.Response{
 			StatusCode: http.StatusOK,
@@ -120,79 +159,52 @@ func (h *EpicHtpasswd) Check(ctx context.Context, request *Request) (*Response, 
 }
 
 // Reconcile ...
-func (h *EpicHtpasswd) Reconcile(ctrl.Request) (ctrl.Result, error) {
-	var opts []client.ListOption
+func (h *EpicHtpasswd) Reconcile(req ctrl.Request) (ctrl.Result, error) {
+	secret := v1.Secret{}
 
-	if h.Selector != nil {
-		opts = append(opts, client.MatchingLabelsSelector{Selector: h.Selector})
+	// Read the secret that caused the event
+	if err := h.Client.Get(context.Background(), req.NamespacedName, &secret); err != nil {
+		// ignore not-found errors, since they can't be fixed by an
+		// immediate requeue (we'll need to wait for a new notification),
+		// and we get them when an object is deleted.
+		return done, client.IgnoreNotFound(err)
 	}
 
-	// First, find all the auth secrets for this realm.
-	secrets := &v1.SecretList{}
-	if err := h.Client.List(context.Background(), secrets, opts...); err != nil {
-		return ctrl.Result{}, err
+	// Only look at basic auth secrets.
+	if secret.Annotations[AnnotationAuthType] != "basic" {
+		return done, nil
 	}
 
-	passwdData := bytes.Buffer{}
-
-	for _, s := range secrets.Items {
-		// Only look at basic auth secrets.
-		if s.Annotations[AnnotationAuthType] != "basic" {
-			continue
+	// Accept the secret if it is for our realm or for any realm.
+	if realm := secret.Annotations[AnnotationAuthRealm]; realm != "" {
+		if realm != h.Realm && realm != "*" {
+			return done, nil
 		}
-
-		// Accept the secret if it is for our realm or for any realm.
-		if realm := s.Annotations[AnnotationAuthRealm]; realm != "" {
-			if realm != h.Realm && realm != "*" {
-				continue
-			}
-		}
-
-		// Check for the "auth" key, which is the format used by ingress-nginx.
-		authData, ok := s.Data["auth"]
-		if !ok {
-			h.Log.Info("skipping Secret without \"auth\" key",
-				"name", s.Name, "namespace", s.Namespace)
-			continue
-		}
-
-		// Do a pre-parse so that we can accept or reject whole Secrets.
-		hasBadLine := false
-
-		if _, err := htpasswd.NewFromReader(
-			bytes.NewBuffer(authData),
-			htpasswd.DefaultSystems,
-			htpasswd.BadLineHandler(func(err error) {
-				hasBadLine = true
-				h.Log.Error(err, "skipping malformed Secret",
-					"name", s.Name, "namespace", s.Namespace)
-			}),
-		); err != nil {
-			h.Log.Error(err, "skipping malformed Secret",
-				"name", s.Name, "namespace", s.Namespace)
-		}
-
-		if hasBadLine {
-			continue
-		}
-
-		// This Secret seems OK, so accumulate it's content.
-		passwdData.WriteByte('\n')
-		passwdData.Write(authData)
 	}
 
-	newPasswd, err := htpasswd.NewFromReader(&passwdData, htpasswd.DefaultSystems,
+	// Check for the "auth" key, which is the format used by ingress-nginx.
+	authData, ok := secret.Data["auth"]
+	if !ok {
+		h.Log.Info("skipping Secret without \"auth\" key",
+			"name", secret.Name, "namespace", secret.Namespace)
+		return done, nil
+	}
+
+	// Do a pre-parse so that we can accept or reject whole Secrets.
+	if newPasswd, err := htpasswd.NewFromReader(
+		bytes.NewBuffer(authData),
+		htpasswd.DefaultSystems,
 		htpasswd.BadLineHandler(func(err error) {
-			panic(fmt.Sprintf("failed to parse valid htpasswd: %s", err))
-		}))
-	if err != nil {
-		h.Log.Error(err, "generated malformed htpasswd data")
-		return ctrl.Result{}, nil
+			h.Log.Error(err, "skipping malformed Secret", "name", secret.Name, "namespace", secret.Namespace)
+		}),
+	); err != nil {
+		h.Log.Error(err, "skipping malformed Secret", "name", secret.Name, "namespace", secret.Namespace)
+	} else {
+		// This Secret seems OK, so accumulate its content.
+		h.Set(secret.Namespace, newPasswd)
 	}
 
-	h.Set(newPasswd)
-
-	return ctrl.Result{}, nil
+	return done, nil
 }
 
 // RegisterWithManager ...
@@ -200,4 +212,15 @@ func (h *EpicHtpasswd) RegisterWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&v1.Secret{}).
 		Complete(h)
+}
+
+func (h *EpicHtpasswd) fetchNamespace(path string) (string, error) {
+	//                           0 1   2    3        4
+	// the path should look like  /api/epic/accounts/{namespace}/foo/bar/...
+	parts := strings.Split(path, "/")
+	if len(parts) < 5 {
+		return "", fmt.Errorf("namespace not found in path %s", path)
+	}
+
+	return "epic-" + parts[4], nil
 }
