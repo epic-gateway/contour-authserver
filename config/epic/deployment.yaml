@@ -1,23 +1,23 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: htpasswd
+  name: epicauth
   labels:
-    app.kubernetes.io/name: htpasswd
+    app.kubernetes.io/name: epicauth
 spec:
   selector:
     matchLabels:
-      app.kubernetes.io/name: htpasswd
+      app.kubernetes.io/name: epicauth
   replicas: 1
   template:
     metadata:
       labels:
-        app.kubernetes.io/name: htpasswd
+        app.kubernetes.io/name: epicauth
     spec:
-      serviceAccountName: htpasswd
+      serviceAccountName: epicauth
       containers:
-      - name: htpasswd
-        image: htpasswd
+      - name: epicauth
+        image: epicauth
         imagePullPolicy: Always
         command:
         - /contour-authserver
@@ -41,14 +41,14 @@ spec:
       volumes:
       - name: tls
         secret:
-          secretName: htpasswd
+          secretName: epicauth
 ---
 apiVersion: v1
 kind: Service
 metadata:
-  name: htpasswd
+  name: epicauth
   labels:
-    app.kubernetes.io/name: htpasswd
+    app.kubernetes.io/name: epicauth
 spec:
   ports:
   - name: auth
@@ -56,5 +56,5 @@ spec:
     port: 9443
     targetPort: 9443
   selector:
-    app.kubernetes.io/name: htpasswd
+    app.kubernetes.io/name: epicauth
   type: ClusterIP

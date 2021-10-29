@@ -10,5 +10,5 @@ resources:
 
 images:
 - name: htpasswd
-  newName: contour-authserver
-  newTag: latest
+  newName: 192.168.1.80:5000/epic/contour-authserver
+  newTag: v0.0.0-dev0
