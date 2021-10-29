@@ -45,8 +45,8 @@ run: fmt vet
 .PHONY: deploy
 deploy: ## Deploy controller in the configured Kubernetes cluster in ~/.kube/config
 deploy:
-	cd config/testserver && kustomize edit set image controller=${IMG}
-	kustomize build config/default | kubectl apply -f -
+	cd config/testserver && kustomize edit set image htpasswd=${IMG}
+	kustomize build config/testserver | kubectl apply -f -
 
 .PHONY: fmt
 fmt: ## Run go fmt against code
