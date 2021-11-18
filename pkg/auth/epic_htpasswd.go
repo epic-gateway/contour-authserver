@@ -110,14 +110,6 @@ func (h *EpicHtpasswd) Check(ctx context.Context, request *Request) (*Response, 
 		ok = false
 	}
 
-	h.Log.Info("checking request",
-		"host", request.Request.Host,
-		"path", request.Request.URL.Path,
-		"id", request.ID,
-		"ns", namespace,
-		"user", user,
-	)
-
 	// If there's an "Authorization" header and we can verify it,
 	// succeed and inject some headers to tell the origin what we did.
 	if ok && h.Match(namespace, user, pass) {
@@ -139,11 +131,27 @@ func (h *EpicHtpasswd) Check(ctx context.Context, request *Request) (*Response, 
 			authorized.Header.Add(key, v)
 		}
 
+		h.Log.Info("Authorized",
+			"host", request.Request.Host,
+			"path", request.Request.URL.Path,
+			"id", request.ID,
+			"ns", namespace,
+			"user", user,
+		)
+
 		return &Response{
 			Allow:    true,
 			Response: authorized,
 		}, nil
 	}
+
+	h.Log.Info("UNAUTHORIZED",
+		"host", request.Request.Host,
+		"path", request.Request.URL.Path,
+		"id", request.ID,
+		"ns", namespace,
+		"user", user,
+	)
 
 	// If there's no "Authorization" header, or the authentication
 	// failed, send an authenticate request.
